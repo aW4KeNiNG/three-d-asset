@@ -13,6 +13,7 @@ pub fn deserialize_img(path: impl AsRef<Path>, bytes: &[u8]) -> Result<Texture2D
     let mut reader = Reader::new(Cursor::new(bytes))
         .with_guessed_format()
         .expect("Cursor io never fails");
+    reader.no_limits();
 
     if reader.format().is_none() {
         reader.set_format(ImageFormat::from_path(path)?);

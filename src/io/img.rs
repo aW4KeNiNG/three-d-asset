@@ -1,5 +1,5 @@
 use crate::{io::RawAssets, texture::*, Error, Result};
-use image::{io::Reader, *};
+use image::*;
 use std::io::Cursor;
 use std::path::Path;
 
@@ -10,34 +10,13 @@ pub fn deserialize_img(path: impl AsRef<Path>, bytes: &[u8]) -> Result<Texture2D
         .filter(|s| !s.starts_with("data:"))
         .unwrap_or("default")
         .to_owned();
-    let mut reader = Reader::new(Cursor::new(bytes))
+    let mut reader = ImageReader::new(Cursor::new(bytes))
         .with_guessed_format()
         .expect("Cursor io never fails");
     reader.no_limits();
 
     if reader.format().is_none() {
         reader.set_format(ImageFormat::from_path(path)?);
-    }
-    #[cfg(feature = "hdr")]
-    if reader.format() == Some(image::ImageFormat::Hdr) {
-        use image::codecs::hdr::*;
-        let decoder = HdrDecoder::new(&*bytes)?;
-        let metadata = decoder.metadata();
-        let img = decoder.read_image_native()?;
-        return Ok(Texture2D {
-            name,
-            data: TextureData::RgbF32(
-                img.iter()
-                    .map(|rgbe| {
-                        let Rgb(values) = rgbe.to_hdr();
-                        [values[0], values[1], values[2]]
-                    })
-                    .collect::<Vec<_>>(),
-            ),
-            width: metadata.width,
-            height: metadata.height,
-            ..Default::default()
-        });
     }
     let img: DynamicImage = reader.decode()?;
     let width = img.width();
@@ -62,7 +41,65 @@ pub fn deserialize_img(path: impl AsRef<Path>, bytes: &[u8]) -> Result<Texture2D
                 .map(|c| [c[0], c[1], c[2], c[3]])
                 .collect::<Vec<_>>(),
         ),
-        _ => unimplemented!(),
+        DynamicImage::ImageLuma16(img) => TextureData::RF16(
+            img.into_raw()
+                .into_iter()
+                .map(|v| crate::prelude::f16::from_f32(v as f32 / u16::MAX as f32))
+                .collect::<Vec<_>>(),
+        ),
+        DynamicImage::ImageLumaA16(img) => TextureData::RgF16(
+            img.into_raw()
+                .chunks(2)
+                .map(|c| {
+                    [
+                        crate::prelude::f16::from_f32(c[0] as f32 / u16::MAX as f32),
+                        crate::prelude::f16::from_f32(c[1] as f32 / u16::MAX as f32),
+                    ]
+                })
+                .collect::<Vec<_>>(),
+        ),
+        DynamicImage::ImageRgb16(img) => TextureData::RgbF16(
+            img.into_raw()
+                .chunks(3)
+                .map(|c| {
+                    [
+                        crate::prelude::f16::from_f32(c[0] as f32 / u16::MAX as f32),
+                        crate::prelude::f16::from_f32(c[1] as f32 / u16::MAX as f32),
+                        crate::prelude::f16::from_f32(c[2] as f32 / u16::MAX as f32),
+                    ]
+                })
+                .collect::<Vec<_>>(),
+        ),
+        DynamicImage::ImageRgba16(img) => TextureData::RgbaF16(
+            img.into_raw()
+                .chunks(4)
+                .map(|c| {
+                    [
+                        crate::prelude::f16::from_f32(c[0] as f32 / u16::MAX as f32),
+                        crate::prelude::f16::from_f32(c[1] as f32 / u16::MAX as f32),
+                        crate::prelude::f16::from_f32(c[2] as f32 / u16::MAX as f32),
+                        crate::prelude::f16::from_f32(c[3] as f32 / u16::MAX as f32),
+                    ]
+                })
+                .collect::<Vec<_>>(),
+        ),
+        DynamicImage::ImageRgb32F(img) => TextureData::RgbF32(
+            img.into_raw()
+                .chunks(3)
+                .map(|c| [c[0], c[1], c[2]])
+                .collect::<Vec<_>>(),
+        ),
+        DynamicImage::ImageRgba32F(img) => TextureData::RgbaF32(
+            img.into_raw()
+                .chunks(4)
+                .map(|c| [c[0], c[1], c[2], c[3]])
+                .collect::<Vec<_>>(),
+        ),
+        other => {
+            return Err(Error::FailedDeserialize(format!(
+                "Unsupported image variant: {other:?}"
+            )))
+        }
     };
     Ok(Texture2D {
         name,
@@ -73,45 +110,90 @@ pub fn deserialize_img(path: impl AsRef<Path>, bytes: &[u8]) -> Result<Texture2D
     })
 }
 
+#[cfg(feature = "svg")]
+pub fn deserialize_svg(path: impl AsRef<Path>, bytes: &[u8]) -> Result<Texture2D> {
+    use cgmath::num_traits::ToPrimitive;
+
+    let name = path
+        .as_ref()
+        .to_str()
+        .filter(|s| !s.starts_with("data:"))
+        .unwrap_or("default")
+        .to_owned();
+    let tree = resvg::usvg::Tree::from_data(bytes, &resvg::usvg::Options::default())?;
+    // TODO: should we have more error checking here?
+    let (width, height) = (
+        tree.size().width().to_u32().unwrap(),
+        tree.size().height().to_u32().unwrap(),
+    );
+    let mut pixmap = resvg::tiny_skia::Pixmap::new(width, height).unwrap();
+    resvg::render(
+        &tree,
+        resvg::tiny_skia::Transform::default(),
+        &mut pixmap.as_mut(),
+    );
+
+    // process the data to our desired RGBAU8 format
+    let texture_data: Vec<[u8; 4]> = pixmap
+        .pixels()
+        .iter()
+        .map(|pixel| [pixel.red(), pixel.green(), pixel.blue(), pixel.alpha()])
+        .collect();
+
+    Ok(Texture2D {
+        name,
+        data: TextureData::RgbaU8(texture_data),
+        width,
+        height,
+        ..Default::default()
+    })
+}
+
 pub fn serialize_img(tex: &Texture2D, path: &Path) -> Result<RawAssets> {
     #![allow(unreachable_code)]
     #![allow(unused_variables)]
-    let format: image::ImageOutputFormat = match path.extension().unwrap().to_str().unwrap() {
+    let format: ImageFormat = match path.extension().unwrap().to_str().unwrap() {
         "png" => {
             #[cfg(not(feature = "png"))]
             return Err(Error::FeatureMissing("png".to_string()));
             #[cfg(feature = "png")]
-            image::ImageOutputFormat::Png
+            ImageFormat::Png
         }
         "jpeg" | "jpg" => {
             #[cfg(not(feature = "jpeg"))]
             return Err(Error::FeatureMissing("jpeg".to_string()));
             #[cfg(feature = "jpeg")]
-            image::ImageOutputFormat::Jpeg(100)
+            ImageFormat::Jpeg
         }
         "bmp" => {
             #[cfg(not(feature = "bmp"))]
             return Err(Error::FeatureMissing("bmp".to_string()));
             #[cfg(feature = "bmp")]
-            image::ImageOutputFormat::Bmp
+            ImageFormat::Bmp
         }
         "tga" => {
             #[cfg(not(feature = "tga"))]
             return Err(Error::FeatureMissing("tga".to_string()));
             #[cfg(feature = "tga")]
-            image::ImageOutputFormat::Tga
+            ImageFormat::Tga
         }
         "tiff" | "tif" => {
             #[cfg(not(feature = "tiff"))]
             return Err(Error::FeatureMissing("tiff".to_string()));
             #[cfg(feature = "tiff")]
-            image::ImageOutputFormat::Tiff
+            ImageFormat::Tiff
         }
         "gif" => {
             #[cfg(not(feature = "gif"))]
             return Err(Error::FeatureMissing("gif".to_string()));
             #[cfg(feature = "gif")]
-            image::ImageOutputFormat::Gif
+            ImageFormat::Gif
+        }
+        "webp" => {
+            #[cfg(not(feature = "webp"))]
+            return Err(Error::FeatureMissing("webp".to_string()));
+            #[cfg(feature = "webp")]
+            ImageFormat::WebP
         }
         _ => return Err(Error::FailedSerialize(path.to_str().unwrap().to_string())),
     };
@@ -135,15 +217,35 @@ pub fn serialize_img(tex: &Texture2D, path: &Path) -> Result<RawAssets> {
             )
             .unwrap(),
         ),
-        TextureData::RgbaU8(data) => DynamicImage::ImageRgba8(
-            ImageBuffer::from_raw(
-                tex.width,
-                tex.height,
-                data.iter().flat_map(|v| *v).collect::<Vec<_>>(),
-            )
-            .unwrap(),
-        ),
-        _ => unimplemented!(),
+        TextureData::RgbaU8(data) => {
+            if format == ImageFormat::Jpeg {
+                DynamicImage::ImageRgb8(
+                    ImageBuffer::from_raw(
+                        tex.width,
+                        tex.height,
+                        data.iter()
+                            .flat_map(|v| [v[0], v[1], v[2]])
+                            .collect::<Vec<_>>(),
+                    )
+                    .unwrap(),
+                )
+            } else {
+                DynamicImage::ImageRgba8(
+                    ImageBuffer::from_raw(
+                        tex.width,
+                        tex.height,
+                        data.iter().flat_map(|v| *v).collect::<Vec<_>>(),
+                    )
+                    .unwrap(),
+                )
+            }
+        }
+        other => {
+            return Err(Error::FailedSerialize(format!(
+                "Unsupported texture data for image serialization: {:?}",
+                other
+            )))
+        }
     };
     let mut bytes: Vec<u8> = Vec::new();
     img.write_to(&mut Cursor::new(&mut bytes), format)?;
@@ -154,6 +256,8 @@ pub fn serialize_img(tex: &Texture2D, path: &Path) -> Result<RawAssets> {
 
 #[cfg(test)]
 mod test {
+    use cgmath::AbsDiffEq;
+
     fn tex() -> crate::Texture2D {
         crate::Texture2D {
             data: crate::TextureData::RgbaU8(vec![
@@ -174,24 +278,26 @@ mod test {
 
         if format == "jpeg" || format == "jpg" {
             if let crate::TextureData::RgbU8(data) = tex.data {
-                assert_eq!(data, vec![[4, 0, 0], [250, 0, 1], [0, 254, 1], [1, 2, 253]]);
+                // Jpeg is not lossless
+                assert!(data
+                    .iter()
+                    .zip(vec![[48, 0, 17], [227, 0, 14], [0, 244, 0], [16, 36, 253]].iter())
+                    .all(|(data_pixel, test_pixel)| data_pixel.abs_diff_eq(test_pixel, 2)));
             } else {
                 panic!("Wrong texture data: {:?}", tex.data)
             }
+        } else if let crate::TextureData::RgbaU8(data) = tex.data {
+            assert_eq!(
+                data,
+                vec![
+                    [0, 0, 0, 255],
+                    [255, 0, 0, 255],
+                    [0, 255, 0, 255],
+                    [0, 0, 255, 255],
+                ]
+            );
         } else {
-            if let crate::TextureData::RgbaU8(data) = tex.data {
-                assert_eq!(
-                    data,
-                    vec![
-                        [0, 0, 0, 255],
-                        [255, 0, 0, 255],
-                        [0, 255, 0, 255],
-                        [0, 0, 255, 255],
-                    ]
-                );
-            } else {
-                panic!("Wrong texture data: {:?}", tex.data)
-            }
+            panic!("Wrong texture data: {:?}", tex.data)
         }
         assert_eq!(tex.width, 2);
         assert_eq!(tex.height, 2);
@@ -266,5 +372,29 @@ mod test {
         }
         assert_eq!(tex.width, 1024);
         assert_eq!(tex.height, 512);
+    }
+
+    #[cfg(feature = "webp")]
+    #[test]
+    pub fn webp() {
+        test_serialize("webp");
+        test_deserialize("webp");
+    }
+
+    #[cfg(feature = "svg")]
+    #[test]
+    pub fn svg() {
+        let tex: crate::Texture2D = crate::io::load_and_deserialize("test_data/test.svg").unwrap();
+        if let crate::TextureData::RgbaU8(data) = tex.data {
+            assert_eq!(data[0], [0, 0, 0, 0]);
+            assert_eq!(data[25036], [0, 51, 255, 255]);
+            assert_eq!(data[20062], [255, 0, 0, 255]);
+            assert_eq!(data[58095], [0, 255, 0, 255]);
+        } else {
+            panic!("Wrong texture data");
+        }
+
+        assert_eq!(tex.width, 320);
+        assert_eq!(tex.height, 240);
     }
 }

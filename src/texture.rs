@@ -15,17 +15,36 @@ use crate::Srgba;
 /// Possible modes of interpolation which determines the texture output between texture pixels.
 ///
 #[allow(missing_docs)]
-#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug)]
+#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Interpolation {
     Nearest,
+    #[default]
     Linear,
     CubicSpline,
 }
 
-impl Default for Interpolation {
+/// Mipmap settings for a texture.
+#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct Mipmap {
+    /// Specifies what type of interpolation to use between the two closest mipmaps.
+    pub filter: Interpolation,
+    /// Specifies the maximum number of mipmap levels that should be created for the texture.
+    /// If this is 1, no mip maps will be created.
+    pub max_levels: u32,
+    /// Specifies the maximum ratio of anisotropy to be used when creating mipmaps for the texture.
+    /// If this is 1, only isotropic mipmaps will be created.
+    pub max_ratio: u32,
+}
+
+impl Default for Mipmap {
     fn default() -> Self {
-        Self::Linear
+        Self {
+            filter: Interpolation::Linear,
+            max_levels: u32::MAX,
+            max_ratio: 1,
+        }
     }
 }
 
@@ -132,6 +151,16 @@ impl TextureData {
                 *color = Srgba::from(Srgba::from(*color).to_linear_srgb()).into();
             }),
             _ => {}
+        };
+    }
+
+    ///
+    /// Converts the texture data to color [TextureData::RgbU8] if the data is [TextureData::RU8] (assuming gray scale colors).
+    /// Does nothing if the data is any other data type.
+    ///
+    pub fn to_color(&mut self) {
+        if let TextureData::RU8(data) = self {
+            *self = TextureData::RgbU8(data.iter().map(|color| [*color, *color, *color]).collect())
         };
     }
 }

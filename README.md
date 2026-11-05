@@ -18,20 +18,25 @@ When in memory, the assets can be for example be
 
 | Format   | Deserialize | Serialize | Feature |
 | -------- | ----------- | --------- | ------- |
-| OBJ/MTL  | ✅          | ❌        | `obj`   |
-| GLTF/GLB | ✅          | ❌        | `gltf`  |
+| OBJ/MTL  | ✅          | ❌        | `obj`   |
+| GLTF/GLB | ✅          | ❌        | `gltf`  |
+| STL      | ✅          | ❌        | `stl`   |
+| FBX      | ✅          | ❌        | `fbx`   |
+| 3MF      | ✅          | ✅        | `3mf`   |
 
 ### Texture2D
 
 | Format | Deserialize | Serialize | Feature |
 | ------ | ----------- | --------- | ------- |
 | PNG    | ✅          | ✅        | `png`   |
-| JPEG   | ✅          | ✅        |  `jpeg` |
+| JPEG   | ✅          | ✅        | `jpeg`  |
 | HDR    | ✅          | ❌        | `hdr`   |
 | GIF    | ✅          | ✅        | `gif`   |
 | TGA    | ✅          | ✅        | `tga`   |
 | TIFF   | ✅          | ✅        | `tiff`  |
 | BMP    | ✅          | ✅        | `bmp`   |
+| SVG    | ✅          | ❌        | `svg`   |
+| WebP   | ✅          | ✅        | `webp`  |
 
 ### PointCloud
 

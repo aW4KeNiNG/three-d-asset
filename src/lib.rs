@@ -218,15 +218,39 @@ pub enum Error {
     #[cfg(feature = "image")]
     #[error("error while parsing an image file")]
     Image(#[from] image::ImageError),
+
+    #[cfg(feature = "svg")]
+    #[error("error while parsing svg file")]
+    Svg(#[from] resvg::usvg::Error),
+
     #[cfg(feature = "obj")]
     #[error("error while parsing an .obj file")]
-    Obj(#[from] wavefront_obj::ParseError),
+    Obj(#[from] tobj::LoadError),
+    #[cfg(feature = "obj")]
+    #[error("material file not found for: {0}")]
+    MissingMaterial(String),
+
+    #[cfg(feature = "3mf")]
+    #[error("error while parsing a .3mf file")]
+    ThreeMf(#[from] lib3mf::Error),
 
     #[cfg(feature = "pcd")]
     #[error("error while parsing an .pcd file")]
-    Pcd(#[from] pcd_rs::anyhow::Error),
+    Pcd(#[from] pcd_rs::Error),
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(feature = "ply")]
+    #[error("error while parsing an .ply file")]
+    Ply(#[from] ply_rs_bw::parser::ParseError),
+
+    #[cfg(feature = "fbx")]
+    #[error("error while parsing an .fbx file")]
+    Fbx(#[from] fbxcel::tree::any::Error),
+
+    #[cfg(feature = "fbx")]
+    #[error("error while parsing an .fbx file - version is not supported")]
+    FbxVersion(fbxcel::low::FbxVersion),
+
+    #[cfg(any(not(target_arch = "wasm32"), feature = "stl"))]
     #[error("io error")]
     IO(#[from] std::io::Error),
     #[cfg(feature = "gltf")]
@@ -259,6 +283,8 @@ pub enum Error {
     NotLoaded(String),
     #[error("the feature {0} is needed")]
     FeatureMissing(String),
+    #[error("failed to guess file extension for {0}")]
+    FailedToGuessFileExtension(String),
     #[error("failed to deserialize the file {0}")]
     FailedDeserialize(String),
     #[error("failed to serialize the file {0}")]

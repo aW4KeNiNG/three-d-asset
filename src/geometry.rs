@@ -44,7 +44,7 @@ impl Geometry {
     ///
     /// Computes the [AxisAlignedBoundingBox] for this geometry.
     ///
-    pub fn compute_aabb(&mut self) -> AxisAlignedBoundingBox {
+    pub fn compute_aabb(&self) -> AxisAlignedBoundingBox {
         match self {
             Self::Triangles(mesh) => mesh.compute_aabb(),
             Self::Points(point_cloud) => point_cloud.compute_aabb(),
@@ -55,10 +55,11 @@ impl Geometry {
 ///
 /// An array of indices. Supports different data types.
 ///
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Indices {
     /// Do not use indices, ie. the faces are all unconnected.
+    #[default]
     None,
     /// Uses unsigned 8 bit integer for each index.
     U8(Vec<u8>),
@@ -110,12 +111,6 @@ impl Indices {
     ///
     pub fn is_empty(&self) -> bool {
         self.len().map(|i| i == 0).unwrap_or(true)
-    }
-}
-
-impl std::default::Default for Indices {
-    fn default() -> Self {
-        Self::None
     }
 }
 

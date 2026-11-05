@@ -48,8 +48,14 @@ pub use saver::*;
 #[cfg(feature = "obj")]
 mod obj;
 
+#[cfg(feature = "stl")]
+mod stl;
+
 #[cfg(feature = "gltf")]
 mod gltf;
+
+#[cfg(feature = "fbx")]
+mod fbx;
 
 #[cfg(feature = "image")]
 mod img;
@@ -59,6 +65,24 @@ mod vol;
 
 #[cfg(feature = "pcd")]
 mod pcd;
+
+#[cfg(feature = "ply")]
+mod ply;
+
+#[cfg(feature = "3mf")]
+#[path = "io/3mf.rs"]
+mod three_mf;
+
+///
+/// Deserialize a single file from raw bytes. The key is used to determine the type of file.
+///
+/// If the file depends on other files, use [RawAssets::insert] to insert the bytes for each of them in [RawAssets] before deserializing.
+///
+pub fn deserialize<T: Deserialize>(key: &str, bytes: Vec<u8>) -> crate::Result<T> {
+    let mut assets = RawAssets::new();
+    assets.insert(key, bytes);
+    assets.deserialize(key)
+}
 
 ///
 /// Loads and deserialize a single file. If the file depends on other files, those files are also loaded.
@@ -119,19 +143,36 @@ use std::path::{Path, PathBuf};
 impl Deserialize for crate::Texture2D {
     fn deserialize(path: impl AsRef<std::path::Path>, raw_assets: &mut RawAssets) -> Result<Self> {
         let path = raw_assets.match_path(path.as_ref())?;
-        #[allow(unused_variables)]
-        let bytes = raw_assets.get(&path)?;
 
-        #[cfg(not(feature = "image"))]
-        return Err(Error::FeatureMissing(
-            path.extension()
-                .map(|e| e.to_str().unwrap())
-                .unwrap_or("image")
-                .to_string(),
-        ));
+        if is_data_url(&path) {
+            #[cfg(not(feature = "image"))]
+            return Err(Error::FeatureMissing("image".to_string()));
+            #[cfg(feature = "image")]
+            return img::deserialize_img(&path, &parse_data_url(path.to_str().unwrap())?);
+        }
 
-        #[cfg(feature = "image")]
-        img::deserialize_img(path, bytes)
+        match FileFormat::guess(raw_assets, &path)? {
+            FileFormat::Svg => {
+                #[cfg(not(feature = "svg"))]
+                return Err(Error::FeatureMissing("svg".to_string()));
+                #[cfg(feature = "svg")]
+                img::deserialize_svg(&path, raw_assets.get(&path)?)
+            }
+            FileFormat::Png
+            | FileFormat::Jpeg
+            | FileFormat::Gif
+            | FileFormat::Bmp
+            | FileFormat::Tga
+            | FileFormat::Tiff
+            | FileFormat::Hdr
+            | FileFormat::WebP => {
+                #[cfg(not(feature = "image"))]
+                return Err(Error::FeatureMissing("image".to_string()));
+                #[cfg(feature = "image")]
+                img::deserialize_img(&path, raw_assets.get(&path)?)
+            }
+            _ => Err(Error::FailedDeserialize(path.to_str().unwrap().to_string())),
+        }
     }
 }
 
@@ -155,27 +196,48 @@ impl Serialize for crate::Texture2D {
 impl Deserialize for crate::Scene {
     fn deserialize(path: impl AsRef<Path>, raw_assets: &mut RawAssets) -> Result<Self> {
         let path = raw_assets.match_path(path.as_ref())?;
-        match path.extension().map(|e| e.to_str().unwrap()).unwrap_or("") {
-            "gltf" | "glb" => {
+        match FileFormat::guess(raw_assets, &path)? {
+            FileFormat::Gltf => {
                 #[cfg(not(feature = "gltf"))]
                 return Err(Error::FeatureMissing("gltf".to_string()));
-
                 #[cfg(feature = "gltf")]
                 gltf::deserialize_gltf(raw_assets, &path)
             }
-            "obj" => {
+            FileFormat::Obj => {
                 #[cfg(not(feature = "obj"))]
                 return Err(Error::FeatureMissing("obj".to_string()));
-
                 #[cfg(feature = "obj")]
                 obj::deserialize_obj(raw_assets, &path)
             }
-            "pcd" => {
+            FileFormat::Stl => {
+                #[cfg(not(feature = "stl"))]
+                return Err(Error::FeatureMissing("stl".to_string()));
+                #[cfg(feature = "stl")]
+                stl::deserialize_stl(raw_assets, &path)
+            }
+            FileFormat::Fbx => {
+                #[cfg(not(feature = "fbx"))]
+                return Err(Error::FeatureMissing("fbx".to_string()));
+                #[cfg(feature = "fbx")]
+                fbx::deserialize_fbx(raw_assets, &path)
+            }
+            FileFormat::Pcd => {
                 #[cfg(not(feature = "pcd"))]
                 return Err(Error::FeatureMissing("pcd".to_string()));
-
                 #[cfg(feature = "pcd")]
                 pcd::deserialize_pcd(raw_assets, &path)
+            }
+            FileFormat::Ply => {
+                #[cfg(not(feature = "ply"))]
+                return Err(Error::FeatureMissing("ply".to_string()));
+                #[cfg(feature = "ply")]
+                ply::deserialize_ply(raw_assets, &path)
+            }
+            FileFormat::ThreeMf => {
+                #[cfg(not(feature = "3mf"))]
+                return Err(Error::FeatureMissing("3mf".to_string()));
+                #[cfg(feature = "3mf")]
+                three_mf::deserialize_3mf(raw_assets, &path)
             }
             _ => Err(Error::FailedDeserialize(path.to_str().unwrap().to_string())),
         }
@@ -189,14 +251,34 @@ impl Deserialize for crate::Model {
     }
 }
 
+impl Serialize for crate::Scene {
+    fn serialize(&self, path: impl AsRef<Path>) -> Result<RawAssets> {
+        let path = path.as_ref();
+        match extension(path).as_str() {
+            "3mf" => {
+                #[cfg(not(feature = "3mf"))]
+                return Err(Error::FeatureMissing("3mf".to_string()));
+
+                #[cfg(feature = "3mf")]
+                {
+                    let bytes = three_mf::serialize_3mf(self)?;
+                    let mut raw_assets = RawAssets::new();
+                    raw_assets.insert(path, bytes);
+                    Ok(raw_assets)
+                }
+            }
+            _ => Err(Error::FailedSerialize(path.to_str().unwrap().to_string())),
+        }
+    }
+}
+
 impl Deserialize for crate::VoxelGrid {
     fn deserialize(path: impl AsRef<Path>, raw_assets: &mut RawAssets) -> Result<Self> {
         let path = raw_assets.match_path(path.as_ref())?;
-        match path.extension().map(|e| e.to_str().unwrap()).unwrap_or("") {
-            "vol" => {
+        match FileFormat::guess(raw_assets, &path)? {
+            FileFormat::Vol => {
                 #[cfg(not(feature = "vol"))]
                 return Err(Error::FeatureMissing("vol".to_string()));
-
                 #[cfg(feature = "vol")]
                 vol::deserialize_vol(raw_assets, &path)
             }
@@ -259,22 +341,26 @@ impl Deserialize for crate::PointCloud {
     }
 }
 
-fn get_dependencies(raw_assets: &RawAssets) -> Vec<PathBuf> {
+fn dependencies(raw_assets: &RawAssets) -> Vec<PathBuf> {
     #[allow(unused_mut)]
     let mut dependencies = HashSet::new();
     for (path, _) in raw_assets.iter() {
-        match path.extension().map(|e| e.to_str().unwrap()).unwrap_or("") {
-            "gltf" | "glb" => {
+        match FileFormat::guess(raw_assets, &path) {
+            Ok(FileFormat::Gltf) => {
                 #[cfg(feature = "gltf")]
                 dependencies.extend(gltf::dependencies(raw_assets, path));
             }
-            "obj" => {
+            Ok(FileFormat::Obj) => {
                 #[cfg(feature = "obj")]
                 dependencies.extend(obj::dependencies_obj(raw_assets, path));
             }
-            "mtl" => {
+            Ok(FileFormat::Mtl) => {
                 #[cfg(feature = "obj")]
                 dependencies.extend(obj::dependencies_mtl(raw_assets, path));
+            }
+            Ok(FileFormat::Fbx) => {
+                #[cfg(feature = "fbx")]
+                dependencies.extend(fbx::dependencies(raw_assets, path));
             }
             _ => {}
         }
@@ -283,4 +369,352 @@ fn get_dependencies(raw_assets: &RawAssets) -> Vec<PathBuf> {
         .into_iter()
         .filter(|d| !raw_assets.contains_key(d))
         .collect()
+}
+
+fn is_data_url(path: &Path) -> bool {
+    path.to_str()
+        .map(|s| s.starts_with("data:"))
+        .unwrap_or(false)
+}
+
+#[allow(unused_variables)]
+fn parse_data_url(path: &str) -> Result<Vec<u8>> {
+    #[cfg(feature = "data-url")]
+    {
+        let url = data_url::DataUrl::process(path)
+            .map_err(|e| Error::FailedParsingDataUrl(path.to_string(), format!("{:?}", e)))?;
+        let (body, _) = url
+            .decode_to_vec()
+            .map_err(|e| Error::FailedParsingDataUrl(path.to_string(), format!("{:?}", e)))?;
+        Ok(body)
+    }
+    #[cfg(not(feature = "data-url"))]
+    Err(Error::FeatureMissing("data-url".to_string()))
+}
+
+#[derive(Debug, PartialEq)]
+enum FileFormat {
+    Gltf,
+    Obj,
+    Mtl,
+    Stl,
+    Fbx,
+    Pcd,
+    ThreeMf,
+    Png,
+    Jpeg,
+    Gif,
+    Bmp,
+    Tga,
+    Tiff,
+    Hdr,
+    WebP,
+    Svg,
+    Vol,
+    Ply,
+}
+
+impl FileFormat {
+    fn guess(raw_assets: &RawAssets, path: &Path) -> Result<Self> {
+        if let Ok(bytes) = raw_assets.get(path) {
+            if bytes.starts_with(b"glTF") || looks_like_gltf_json(bytes) {
+                return Ok(Self::Gltf);
+            }
+            if bytes.starts_with(b"Kaydara FBX Binary") {
+                return Ok(Self::Fbx);
+            }
+            if bytes.starts_with(&[0x50, 0x4B, 0x03, 0x04]) {
+                return Ok(Self::ThreeMf);
+            }
+            if bytes.starts_with(b"# .PCD") || bytes.starts_with(b"VERSION") {
+                return Ok(Self::Pcd);
+            }
+            if bytes.starts_with(b"ply") {
+                return Ok(Self::Ply);
+            }
+            if bytes.starts_with(b"solid ") {
+                return Ok(Self::Stl);
+            }
+            if looks_like_obj(bytes) {
+                return Ok(Self::Obj);
+            }
+            let trimmed = &bytes[bytes
+                .iter()
+                .position(|b| !b.is_ascii_whitespace())
+                .unwrap_or(0)..];
+            if trimmed.starts_with(b"<svg") || trimmed.starts_with(b"<?xml") {
+                return Ok(Self::Svg);
+            }
+            #[cfg(feature = "image")]
+            match image::guess_format(bytes) {
+                Ok(image::ImageFormat::Png) => return Ok(Self::Png),
+                Ok(image::ImageFormat::Jpeg) => return Ok(Self::Jpeg),
+                Ok(image::ImageFormat::Gif) => return Ok(Self::Gif),
+                Ok(image::ImageFormat::Bmp) => return Ok(Self::Bmp),
+                Ok(image::ImageFormat::Tga) => return Ok(Self::Tga),
+                Ok(image::ImageFormat::Tiff) => return Ok(Self::Tiff),
+                Ok(image::ImageFormat::Hdr) => return Ok(Self::Hdr),
+                Ok(image::ImageFormat::WebP) => return Ok(Self::WebP),
+                _ => {}
+            }
+        }
+
+        match extension(path).as_str() {
+            "gltf" | "glb" => return Ok(Self::Gltf),
+            "obj" => return Ok(Self::Obj),
+            "stl" => return Ok(Self::Stl),
+            "fbx" => return Ok(Self::Fbx),
+            "pcd" => return Ok(Self::Pcd),
+            "mtl" => return Ok(Self::Mtl),
+            "3mf" => return Ok(Self::ThreeMf),
+            "svg" => return Ok(Self::Svg),
+            "vol" => return Ok(Self::Vol),
+            "png" => return Ok(Self::Png),
+            "jpg" | "jpeg" => return Ok(Self::Jpeg),
+            "gif" => return Ok(Self::Gif),
+            "bmp" => return Ok(Self::Bmp),
+            "tga" => return Ok(Self::Tga),
+            "tiff" | "tif" => return Ok(Self::Tiff),
+            "hdr" => return Ok(Self::Hdr),
+            "webp" => return Ok(Self::WebP),
+            _ => {}
+        }
+
+        Err(Error::FailedToGuessFileExtension(
+            path.to_str().unwrap().to_string(),
+        ))
+    }
+}
+
+fn looks_like_gltf_json(bytes: &[u8]) -> bool {
+    let text = match std::str::from_utf8(&bytes[..bytes.len().min(4096)]) {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+    text.contains("\"asset\"") && text.contains("\"version\"")
+}
+
+fn looks_like_obj(bytes: &[u8]) -> bool {
+    let text = match std::str::from_utf8(&bytes[..bytes.len().min(4096)]) {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+    text.lines().any(|line| {
+        let line = line.trim();
+        line.starts_with("v ")
+            || line.starts_with("vn ")
+            || line.starts_with("vt ")
+            || line.starts_with("f ")
+            || line.starts_with("o ")
+            || line.starts_with("g ")
+            || line.starts_with("mtllib ")
+    })
+}
+
+fn extension(path: &Path) -> String {
+    path.extension()
+        .map(|e| e.to_str().unwrap().to_ascii_lowercase())
+        .unwrap_or("".to_string())
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use std::path::Path;
+
+    fn assets_with(path: &str, bytes: &[u8]) -> RawAssets {
+        let mut assets = RawAssets::new();
+        assets.insert(path, bytes.to_vec());
+        assets
+    }
+
+    #[test]
+    fn guess_gltf_from_extension() {
+        let assets = assets_with("model.gltf", b"{}");
+        assert_eq!(
+            FileFormat::guess(&assets, Path::new("model.gltf")).unwrap(),
+            FileFormat::Gltf
+        );
+    }
+
+    #[test]
+    fn guess_obj_from_extension() {
+        let assets = assets_with("model.obj", b"v 0 0 0");
+        assert_eq!(
+            FileFormat::guess(&assets, Path::new("model.obj")).unwrap(),
+            FileFormat::Obj
+        );
+    }
+
+    #[test]
+    fn guess_glb_from_magic_bytes_with_wrong_extension() {
+        let assets = assets_with("model.obj", b"glTF\x02\x00\x00\x00");
+        assert_eq!(
+            FileFormat::guess(&assets, Path::new("model.obj")).unwrap(),
+            FileFormat::Gltf
+        );
+    }
+
+    #[test]
+    fn guess_fbx_from_magic_bytes_with_wrong_extension() {
+        let assets = assets_with("model.txt", b"Kaydara FBX Binary\x00\x00");
+        assert_eq!(
+            FileFormat::guess(&assets, Path::new("model.txt")).unwrap(),
+            FileFormat::Fbx
+        );
+    }
+
+    #[test]
+    fn guess_3mf_from_magic_bytes_with_wrong_extension() {
+        let assets = assets_with("archive.zip", &[0x50, 0x4B, 0x03, 0x04, 0x00]);
+        assert_eq!(
+            FileFormat::guess(&assets, Path::new("archive.zip")).unwrap(),
+            FileFormat::ThreeMf
+        );
+    }
+
+    #[test]
+    fn guess_pcd_from_magic_bytes_with_wrong_extension() {
+        let assets = assets_with("cloud.dat", b"# .PCD v0.7\n");
+        assert_eq!(
+            FileFormat::guess(&assets, Path::new("cloud.dat")).unwrap(),
+            FileFormat::Pcd
+        );
+    }
+
+    #[test]
+    fn guess_stl_from_magic_bytes_with_wrong_extension() {
+        let assets = assets_with("model.bin", b"solid cube\nfacet normal 0 0 1\n");
+        assert_eq!(
+            FileFormat::guess(&assets, Path::new("model.bin")).unwrap(),
+            FileFormat::Stl
+        );
+    }
+
+    #[test]
+    fn guess_svg_from_content_with_wrong_extension() {
+        let assets = assets_with(
+            "image.bin",
+            b"<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>",
+        );
+        assert_eq!(
+            FileFormat::guess(&assets, Path::new("image.bin")).unwrap(),
+            FileFormat::Svg
+        );
+    }
+
+    #[test]
+    fn guess_svg_from_xml_declaration_with_wrong_extension() {
+        let assets = assets_with("image.bin", b"<?xml version=\"1.0\"?><svg></svg>");
+        assert_eq!(
+            FileFormat::guess(&assets, Path::new("image.bin")).unwrap(),
+            FileFormat::Svg
+        );
+    }
+
+    #[test]
+    fn guess_glb_from_magic_bytes_with_no_extension() {
+        let assets = assets_with("model", b"glTF\x02\x00\x00\x00");
+        assert_eq!(
+            FileFormat::guess(&assets, Path::new("model")).unwrap(),
+            FileFormat::Gltf
+        );
+    }
+
+    #[test]
+    fn guess_fbx_from_magic_bytes_with_no_extension() {
+        let assets = assets_with("model", b"Kaydara FBX Binary\x00\x00");
+        assert_eq!(
+            FileFormat::guess(&assets, Path::new("model")).unwrap(),
+            FileFormat::Fbx
+        );
+    }
+
+    #[test]
+    fn guess_fails_with_no_extension_and_unknown_content() {
+        let assets = assets_with("data", b"some random bytes");
+        assert!(FileFormat::guess(&assets, Path::new("data")).is_err());
+    }
+
+    #[test]
+    fn guess_falls_back_to_extension_for_unknown_content() {
+        let assets = assets_with("model.obj", b"unknown content");
+        assert_eq!(
+            FileFormat::guess(&assets, Path::new("model.obj")).unwrap(),
+            FileFormat::Obj
+        );
+    }
+
+    #[test]
+    fn guess_fails_with_unknown_extension_and_unknown_content() {
+        let assets = assets_with("model.xyz", b"unknown content");
+        assert!(FileFormat::guess(&assets, Path::new("model.xyz")).is_err());
+    }
+
+    #[test]
+    fn guess_works_without_bytes_in_assets() {
+        let assets = RawAssets::new();
+        assert_eq!(
+            FileFormat::guess(&assets, Path::new("model.obj")).unwrap(),
+            FileFormat::Obj
+        );
+    }
+
+    #[test]
+    fn guess_fails_without_bytes_and_unknown_extension() {
+        let assets = RawAssets::new();
+        assert!(FileFormat::guess(&assets, Path::new("model.xyz")).is_err());
+    }
+
+    #[test]
+    fn deserialize_obj_with_fbx_extension() {
+        let model: crate::Model =
+            crate::io::load_and_deserialize("test_data/cube_wrong_extension.fbx").unwrap();
+        assert_eq!(model.geometries.len(), 1);
+        assert_eq!(model.materials.len(), 0);
+    }
+
+    #[test]
+    fn deserialize_obj_with_glb_extension() {
+        let model: crate::Model =
+            crate::io::load_and_deserialize("test_data/cube_wrong_extension.glb").unwrap();
+        assert_eq!(model.geometries.len(), 1);
+        assert_eq!(model.materials.len(), 0);
+    }
+
+    #[test]
+    fn deserialize_obj_with_no_extension() {
+        let model: crate::Model =
+            crate::io::load_and_deserialize("test_data/cube_no_extension").unwrap();
+        assert_eq!(model.geometries.len(), 1);
+        assert_eq!(model.materials.len(), 0);
+    }
+
+    #[test]
+    fn deserialize_fbx_with_wrong_extension() {
+        let model: crate::Model =
+            crate::io::load_and_deserialize("test_data/Cube_fbx_wrong_extension.obj").unwrap();
+        assert_eq!(model.geometries.len(), 1);
+    }
+
+    #[test]
+    fn deserialize_fbx_with_no_extension() {
+        let model: crate::Model =
+            crate::io::load_and_deserialize("test_data/Cube_fbx_no_extension").unwrap();
+        assert_eq!(model.geometries.len(), 1);
+    }
+
+    #[test]
+    fn deserialize_gltf_with_wrong_extension() {
+        let model: crate::Model =
+            crate::io::load_and_deserialize("test_data/Cube_gltf_wrong_extension.stl").unwrap();
+        assert_eq!(model.geometries.len(), 1);
+    }
+
+    #[test]
+    fn deserialize_gltf_with_no_extension() {
+        let model: crate::Model =
+            crate::io::load_and_deserialize("test_data/Cube_gltf_no_extension").unwrap();
+        assert_eq!(model.geometries.len(), 1);
+    }
 }

@@ -300,6 +300,16 @@ fn parse_material(
         } else {
             None
         };
+    let alpha_mode = match material.alpha_mode() {
+        ::gltf::material::AlphaMode::Opaque => AlphaMode::Opaque,
+        ::gltf::material::AlphaMode::Mask => AlphaMode::Mask,
+        ::gltf::material::AlphaMode::Blend => AlphaMode::Blend,
+    };
+    // A mask without a cutoff cuts at 0.5, the default of glTF
+    let alpha_cutout = match alpha_mode {
+        AlphaMode::Mask => Some(material.alpha_cutoff().unwrap_or(0.5)),
+        _ => material.alpha_cutoff(),
+    };
     Ok(PbrMaterial {
         name: material_name(material),
         albedo: color.into(),
@@ -320,11 +330,13 @@ fn parse_material(
             .unwrap_or(0.0),
         transmission_texture,
         index_of_refraction: material.ior().unwrap_or(1.5),
-        alpha_cutout: material.alpha_cutoff(),
+        alpha_cutout,
         lighting_model: LightingModel::Cook(
             NormalDistributionFunction::TrowbridgeReitzGGX,
             GeometryFunction::SmithSchlickGGX,
         ),
+        alpha_mode: Some(alpha_mode),
+        double_sided: material.double_sided(),
     })
 }
 
@@ -488,6 +500,32 @@ mod test {
         let model: Model = crate::io::load_and_deserialize("test_data/data_url.gltf").unwrap();
         assert_eq!(model.geometries.len(), 1);
         assert_eq!(model.materials.len(), 1);
+    }
+
+    #[test]
+    pub fn deserialize_gltf_alpha_modes() {
+        let model: Model = crate::io::load_and_deserialize("test_data/alpha_modes.gltf").unwrap();
+        let modes = model
+            .materials
+            .iter()
+            .map(|m| {
+                (
+                    m.name.as_str(),
+                    m.alpha_mode,
+                    m.alpha_cutout,
+                    m.double_sided,
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            modes,
+            vec![
+                ("opaque", Some(AlphaMode::Opaque), None, false),
+                ("mask", Some(AlphaMode::Mask), Some(0.5), false),
+                ("mask_03", Some(AlphaMode::Mask), Some(0.3), false),
+                ("blend", Some(AlphaMode::Blend), None, true),
+            ]
+        );
     }
 
     #[test]

@@ -39,6 +39,19 @@ pub enum NormalDistributionFunction {
     TrowbridgeReitzGGX,
 }
 
+/// How the alpha of the albedo is used, as the `alphaMode` of a glTF material.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum AlphaMode {
+    /// The alpha is ignored and the material is opaque.
+    #[default]
+    Opaque,
+    /// The material is cut out where the alpha is below [PbrMaterial::alpha_cutout].
+    Mask,
+    /// The alpha blends the material with what is behind it.
+    Blend,
+}
+
 ///
 /// A CPU-side version of a material used for physically based rendering (PBR).
 ///
@@ -89,6 +102,13 @@ pub struct PbrMaterial {
     pub transmission: f32,
     /// Texture containing the transmission parameter which are multiplied with the [Self::transmission] to get the final parameter.
     pub transmission_texture: Option<Texture2D>,
+    /// How the alpha of the albedo is used, when the source says it (glTF does). If it is `None`,
+    /// the alpha of the albedo and [Self::alpha_cutout] tell whether the material is transparent.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub alpha_mode: Option<AlphaMode>,
+    /// Whether both sides of the triangles are visible. Otherwise the back faces are culled.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub double_sided: bool,
 }
 
 impl Default for PbrMaterial {
@@ -112,6 +132,8 @@ impl Default for PbrMaterial {
             transmission_texture: None,
             alpha_cutout: None,
             lighting_model: LightingModel::Blinn,
+            alpha_mode: None,
+            double_sided: false,
         }
     }
 }

@@ -219,9 +219,13 @@ fn parse_model(mesh: &::gltf::mesh::Mesh, buffers: &[::gltf::buffer::Data]) -> R
                     .collect()
             });
 
-            let uvs = reader
-                .read_tex_coords(0)
-                .map(|values| values.into_f32().map(|uv| uv.into()).collect());
+            let transform = uv_transform(&primitive.material());
+            let uvs = reader.read_tex_coords(0).map(|values| {
+                values
+                    .into_f32()
+                    .map(|uv| transform_uv(transform, uv).into())
+                    .collect()
+            });
 
             children.push(Node {
                 geometry: Some(Geometry::Triangles(TriMesh {
@@ -238,6 +242,56 @@ fn parse_model(mesh: &::gltf::mesh::Mesh, buffers: &[::gltf::buffer::Data]) -> R
         }
     }
     Ok(children)
+}
+
+/// The `KHR_texture_transform` that the UVs of the meshes of `material` take, as the matrix
+/// `[a, b, c, d, e, f]` of `u' = a·u + b·v + e` and `v' = c·u + d·v + f`, or `None` without one.
+///
+/// glTF can transform each texture of a material in its own way, but a mesh has a single set of
+/// UVs here: the transform of its first texture that has one is taken, in the order base color,
+/// metallic roughness, normal, occlusion and emissive. Only a transform of the first set of UVs
+/// (`TEXCOORD_0`, the one that is read) counts.
+fn uv_transform(material: &::gltf::material::Material) -> Option<[f32; 6]> {
+    let pbr = material.pbr_metallic_roughness();
+    let transforms = [
+        pbr.base_color_texture()
+            .and_then(|info| Some((info.tex_coord(), info.texture_transform()?))),
+        pbr.metallic_roughness_texture()
+            .and_then(|info| Some((info.tex_coord(), info.texture_transform()?))),
+        material
+            .normal_texture()
+            .and_then(|info| Some((info.tex_coord(), info.texture_transform()?))),
+        material
+            .occlusion_texture()
+            .and_then(|info| Some((info.tex_coord(), info.texture_transform()?))),
+        material
+            .emissive_texture()
+            .and_then(|info| Some((info.tex_coord(), info.texture_transform()?))),
+    ];
+    let (tex_coord, transform) = transforms.into_iter().flatten().next()?;
+    if transform.tex_coord().unwrap_or(tex_coord) != 0 {
+        return None;
+    }
+    // translation * rotation * scale, with the rotation counter-clockwise in UV space
+    let [offset_u, offset_v] = transform.offset();
+    let [scale_u, scale_v] = transform.scale();
+    let (sin, cos) = transform.rotation().sin_cos();
+    Some([
+        cos * scale_u,
+        sin * scale_v,
+        -sin * scale_u,
+        cos * scale_v,
+        offset_u,
+        offset_v,
+    ])
+}
+
+/// `uv` transformed by the matrix of [uv_transform], if there is one.
+fn transform_uv(transform: Option<[f32; 6]>, uv: [f32; 2]) -> [f32; 2] {
+    match transform {
+        Some([a, b, c, d, e, f]) => [a * uv[0] + b * uv[1] + e, c * uv[0] + d * uv[1] + f],
+        None => uv,
+    }
 }
 
 fn material_name(material: &::gltf::material::Material) -> String {
@@ -526,6 +580,23 @@ mod test {
                 ("blend", Some(AlphaMode::Blend), None, true),
             ]
         );
+    }
+
+    #[test]
+    pub fn deserialize_gltf_with_texture_transform() {
+        // The lower left quadrant of the texture, rotated, as in the example of the extension
+        let model: Model =
+            crate::io::load_and_deserialize("test_data/texture_transform.gltf").unwrap();
+        let Geometry::Triangles(mesh) = &model.geometries[0].geometry else {
+            panic!("triangles")
+        };
+        let uvs = mesh.uvs.as_ref().unwrap();
+        for (uv, expected) in uvs.iter().zip([[0.0, 1.0], [0.0, 0.5], [0.5, 1.0]]) {
+            assert!(
+                (uv.x - expected[0]).abs() < 1e-5 && (uv.y - expected[1]).abs() < 1e-5,
+                "{uv:?} != {expected:?}"
+            );
+        }
     }
 
     #[test]
